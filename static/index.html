@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="description" content="Convert classroom lecture audio into editable text with WER accuracy metrics." />
+  <title>LectureScript · Speech-to-Text</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ══════════════════════ TOP NAV ══════════════════════ -->
+<nav class="navbar">
+  <div class="nav-inner">
+    <a class="nav-brand" href="#">
+      <span class="brand-icon">🎓</span>
+      <span class="brand-name">LectureScript</span>
+    </a>
+    <span class="nav-badge">Powered by Whisper</span>
+  </div>
+</nav>
+
+<!-- ══════════════════════ HERO ══════════════════════ -->
+<section class="hero">
+  <div class="hero-inner">
+    <h1 class="hero-title">Lecture Audio <span class="gradient-text">to Text</span></h1>
+    <p class="hero-sub">Upload a recording, get an editable transcript, and measure accuracy — all in your browser.</p>
+    <!-- Step pills -->
+    <div class="step-pills">
+      <span class="step-pill active" data-step="1">① Upload</span>
+      <span class="step-pill-divider">›</span>
+      <span class="step-pill" data-step="2">② Transcribe</span>
+      <span class="step-pill-divider">›</span>
+      <span class="step-pill" data-step="3">③ Edit</span>
+      <span class="step-pill-divider">›</span>
+      <span class="step-pill" data-step="4">④ Evaluate</span>
+    </div>
+  </div>
+</section>
+
+<main class="main-grid">
+
+  <!-- ══════════════════ UPLOAD CARD ══════════════════ -->
+  <section class="card" id="upload-card">
+    <div class="card-header">
+      <span class="card-icon">🎙️</span>
+      <div>
+        <h2 class="card-title">Upload Audio</h2>
+        <p class="card-desc">MP3 · WAV · M4A · OGG · FLAC · WEBM</p>
+      </div>
+    </div>
+
+    <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-label="Upload audio file">
+      <div class="drop-visual">
+        <div class="drop-circle">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <p class="drop-title">Drag &amp; drop your audio here</p>
+        <p class="drop-hint">or tap to browse</p>
+      </div>
+      <input type="file" id="audio-input" accept=".mp3,.wav,.m4a,.ogg,.flac,.webm" hidden aria-hidden="true" />
+    </div>
+
+    <!-- File selected state -->
+    <div id="file-selected" class="file-selected hidden">
+      <div class="file-row">
+        <span class="file-thumb">🎵</span>
+        <div class="file-details">
+          <span class="file-name" id="file-name-text">—</span>
+          <span class="file-size" id="file-size-text">—</span>
+        </div>
+        <button class="icon-btn danger" id="clear-file-btn" aria-label="Remove file" title="Remove">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div id="audio-preview-wrap">
+        <audio id="audio-preview" controls preload="metadata"></audio>
+      </div>
+    </div>
+
+    <button class="btn btn-primary btn-lg w-full" id="transcribe-btn" disabled>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+      Transcribe Audio
+    </button>
+  </section>
+
+  <!-- ══════════════════ PROGRESS BAR (full-width) ══════════════════ -->
+  <div id="progress-wrap" class="progress-wrap hidden">
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <p class="progress-msg" id="progress-msg">Analysing audio…</p>
+  </div>
+
+  <!-- ══════════════════ TRANSCRIPT CARD ══════════════════ -->
+  <section class="card hidden" id="transcript-card">
+    <div class="card-header">
+      <span class="card-icon">📝</span>
+      <div>
+        <h2 class="card-title">Transcript</h2>
+        <p class="card-desc" id="transcript-meta">Edit the text below if needed</p>
+      </div>
+    </div>
+
+    <!-- Metadata chips -->
+    <div class="chip-row" id="meta-chips"></div>
+
+    <textarea id="transcript-box" class="text-area" rows="10"
+              placeholder="Your transcript will appear here…" spellcheck="true"></textarea>
+
+    <!-- Word count bar -->
+    <div class="word-count-bar">
+      <span id="word-count">0 words</span>
+      <button class="text-btn" id="toggle-segments-btn">▾ Show timed segments</button>
+    </div>
+
+    <!-- Segments panel -->
+    <div id="segments-panel" class="segments-panel hidden"></div>
+
+    <!-- Actions -->
+    <div class="btn-group">
+      <button class="btn btn-outline" id="copy-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy
+      </button>
+      <button class="btn btn-outline" id="download-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Download .txt
+      </button>
+      <button class="btn btn-ghost" id="clear-transcript-btn">Clear</button>
+    </div>
+  </section>
+
+  <!-- ══════════════════ ACCURACY CARD ══════════════════ -->
+  <section class="card hidden" id="accuracy-card">
+    <div class="card-header">
+      <span class="card-icon">🎯</span>
+      <div>
+        <h2 class="card-title">Accuracy Evaluation</h2>
+        <p class="card-desc">Compare against your reference transcript</p>
+      </div>
+    </div>
+
+    <label class="field-label" for="reference-box">Reference Transcript <span class="label-hint">(ground truth)</span></label>
+    <textarea id="reference-box" class="text-area" rows="7"
+              placeholder="Type or paste the correct transcript here…" spellcheck="true"></textarea>
+
+    <div class="btn-group">
+      <label class="btn btn-outline" for="ref-file-input">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+        </svg>
+        Load .txt file
+      </label>
+      <input type="file" id="ref-file-input" accept=".txt" hidden />
+      <button class="btn btn-primary" id="evaluate-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        Calculate WER
+      </button>
+    </div>
+
+    <!-- WER results -->
+    <div id="wer-results" class="wer-results hidden">
+      <div class="divider"></div>
+      <h3 class="results-title">Error Analysis</h3>
+      <div class="wer-grid">
+        <div class="wer-stat wer-stat--primary">
+          <span class="wer-stat-val" id="stat-wer">—</span>
+          <span class="wer-stat-lbl">Word Error Rate</span>
+          <div class="wer-bar-wrap"><div class="wer-bar" id="wer-bar"></div></div>
+        </div>
+        <div class="wer-stat wer-stat--success">
+          <span class="wer-stat-val" id="stat-acc">—</span>
+          <span class="wer-stat-lbl">Accuracy</span>
+          <div class="wer-bar-wrap"><div class="wer-bar wer-bar--success" id="acc-bar"></div></div>
+        </div>
+        <div class="wer-stat">
+          <span class="wer-stat-val" id="stat-sub">—</span>
+          <span class="wer-stat-lbl">Substitutions</span>
+        </div>
+        <div class="wer-stat">
+          <span class="wer-stat-val" id="stat-del">—</span>
+          <span class="wer-stat-lbl">Deletions</span>
+        </div>
+        <div class="wer-stat">
+          <span class="wer-stat-val" id="stat-ins">—</span>
+          <span class="wer-stat-lbl">Insertions</span>
+        </div>
+        <div class="wer-stat">
+          <span class="wer-stat-val" id="stat-hit">—</span>
+          <span class="wer-stat-lbl">Correct Words</span>
+        </div>
+      </div>
+
+      <!-- WER quality badge -->
+      <div id="wer-quality" class="wer-quality hidden"></div>
+    </div>
+  </section>
+
+  <!-- ══════════════════ COMPARE CARD ══════════════════ -->
+  <section class="card" id="compare-card">
+    <div class="card-header">
+      <span class="card-icon">📊</span>
+      <div>
+        <h2 class="card-title">Multi-Recording Comparison</h2>
+        <p class="card-desc">Compare WER across different speakers, accents, or speeds</p>
+      </div>
+    </div>
+
+    <!-- Column labels (desktop only) -->
+    <div class="compare-col-labels" aria-hidden="true">
+      <span>Label / Description</span>
+      <span>Hypothesis (ASR output)</span>
+      <span>Reference (ground truth)</span>
+      <span></span>
+    </div>
+
+    <div id="compare-rows"></div>
+
+    <div class="btn-group">
+      <button class="btn btn-outline" id="add-row-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Add Row
+      </button>
+      <button class="btn btn-primary" id="run-compare-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        Run Comparison
+      </button>
+    </div>
+
+    <!-- Results table -->
+    <div id="compare-results" class="compare-results hidden">
+      <div class="divider"></div>
+      <div class="results-header">
+        <h3 class="results-title">Results</h3>
+        <button class="btn btn-outline btn-sm" id="export-csv-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Export CSV
+        </button>
+      </div>
+      <div class="table-scroll">
+        <table id="compare-table">
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th>WER %</th>
+              <th>Accuracy %</th>
+              <th>Substitutions</th>
+              <th>Deletions</th>
+              <th>Insertions</th>
+              <th>Ref Words</th>
+            </tr>
+          </thead>
+          <tbody id="compare-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p>LectureScript · Built with <a href="https://github.com/openai/whisper" target="_blank" rel="noopener">OpenAI Whisper</a> &amp; <a href="https://github.com/jitsi/jiwer" target="_blank" rel="noopener">JiWER</a></p>
+</footer>
+
+<!-- Toast notification -->
+<div id="toast" class="toast" role="alert" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

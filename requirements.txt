@@ -1,0 +1,18 @@
+# Core framework & Production server
+flask>=3.0.0
+flask-cors>=4.0.0
+gunicorn>=21.2.0
+
+# Speech Recognition
+openai-whisper>=20231117
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.1
+
+# WER evaluation
+jiwer>=3.0.0
+
+# Utilities
+numpy>=1.24.0
+
