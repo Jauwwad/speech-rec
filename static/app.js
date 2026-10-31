@@ -139,15 +139,15 @@ transcribeBtn.addEventListener("click", async () => {
   if (!selectedFile) return;
 
   show(progressWrap);
-  progressMsg.textContent = "Uploading to OpenAI Whisper API… please wait";
+  progressMsg.textContent = "Uploading audio… please wait";
   transcribeBtn.disabled = true;
   setActiveStep(2);
 
   // Animated progress message cycle so user knows it's working
   const msgs = [
-    "Uploading audio to OpenAI Whisper API…",
-    "Transcribing your lecture… (this may take 10–30s)",
-    "Processing longer audio… almost there…",
+    "Uploading audio to Whisper API…",
+    "Transcribing your lecture…",
+    "Processing audio… almost there…",
     "Finalising transcript…",
   ];
   let msgIdx = 0;

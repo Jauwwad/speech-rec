@@ -1,16 +1,17 @@
 """
 Classroom Lecture Speech-to-Text System
-Backend using OpenAI Whisper API (cloud) for transcription — no local model loaded.
+Backend using Groq Whisper API (free, fast, no local model needed).
 """
 
 import os
 import gc
 import traceback
+import tempfile
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from openai import OpenAI
+from groq import Groq
 from jiwer import process_words
 
 # ─── App Setup ───────────────────────────────────────────────────────────────
@@ -23,15 +24,27 @@ UPLOAD_FOLDER.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a", "ogg", "flac", "webm"}
 
-MAX_FILE_BYTES = 24 * 1024 * 1024   # 24 MB (OpenAI limit is 25 MB)
+MAX_FILE_BYTES = 24 * 1024 * 1024   # 24 MB (API limit)
 
-# Build OpenAI client — key comes from OPENAI_API_KEY env var set in Render
-_api_key = os.environ.get("OPENAI_API_KEY", "")
-if not _api_key:
-    print("⚠️  OPENAI_API_KEY not set — transcription will fail until the key is configured.")
-client = OpenAI(api_key=_api_key)
+# Check API keys: Groq is preferred (free, fast whisper-large-v3)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-print("✓ LectureScript backend ready (OpenAI Whisper API mode).")
+if GROQ_API_KEY:
+    print("✓ LectureScript ready with Groq Whisper API (whisper-large-v3, free tier).")
+elif OPENAI_API_KEY:
+    print("✓ LectureScript ready with OpenAI Whisper API.")
+else:
+    print("⚠️  Neither GROQ_API_KEY nor OPENAI_API_KEY set.")
+
+def get_transcription_client():
+    if os.environ.get("GROQ_API_KEY"):
+        from groq import Groq
+        return "groq", Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    elif os.environ.get("OPENAI_API_KEY"):
+        from openai import OpenAI
+        return "openai", OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    return None, None
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -56,29 +69,41 @@ def get_audio_duration(filepath: str) -> float | None:
 
 
 def transcribe_audio(filepath: str) -> dict:
-    """Send audio to OpenAI Whisper API and return full transcript + segments."""
+    """Send audio to Groq or OpenAI Whisper API and return full transcript + segments."""
+    provider, client = get_transcription_client()
+    if not client:
+        raise ValueError("No API key configured. Please set GROQ_API_KEY in your Render dashboard.")
+
+    model = "whisper-large-v3" if provider == "groq" else "whisper-1"
+
     with open(filepath, "rb") as f:
         response = client.audio.transcriptions.create(
-            model="whisper-1",
+            model=model,
             file=f,
-            response_format="verbose_json",   # includes segments with timestamps
+            response_format="verbose_json",
             timestamp_granularities=["segment"],
         )
 
     segments = []
     if hasattr(response, "segments") and response.segments:
         for seg in response.segments:
+            seg_dict = seg if isinstance(seg, dict) else seg.__dict__
             segments.append({
-                "id":    seg.id,
-                "start": round(seg.start, 2),
-                "end":   round(seg.end,   2),
-                "text":  seg.text.strip(),
+                "id":    seg_dict.get("id", 0),
+                "start": round(seg_dict.get("start", 0.0), 2),
+                "end":   round(seg_dict.get("end", 0.0), 2),
+                "text":  seg_dict.get("text", "").strip(),
             })
 
+    text = getattr(response, "text", "")
+    if isinstance(response, dict):
+        text = response.get("text", "")
+
     return {
-        "text":     (response.text or "").strip(),
+        "text":     (text or "").strip(),
         "language": getattr(response, "language", "unknown"),
         "segments": segments,
+        "provider": provider,
     }
 
 
@@ -116,7 +141,7 @@ def index():
 
 @app.route("/api/health")
 def health():
-    has_key = bool(os.environ.get("OPENAI_API_KEY"))
+    has_key = bool(os.environ.get("GROQ_API_KEY"))
     return jsonify({"status": "ok", "api_key_configured": has_key})
 
 
@@ -131,8 +156,11 @@ def api_transcribe():
         return jsonify({"error": "No file selected."}), 400
     if not allowed_file(file.filename):
         return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
-    if not os.environ.get("OPENAI_API_KEY"):
-        return jsonify({"error": "Server is not configured with an OpenAI API key. Please set the OPENAI_API_KEY environment variable in your Render dashboard."}), 503
+    provider, _ = get_transcription_client()
+    if not provider:
+        return jsonify({
+            "error": "Server is not configured with an API key. Please add GROQ_API_KEY (free at console.groq.com) in your Render dashboard under Environment."
+        }), 503
 
     suffix = Path(file.filename).suffix.lower() or ".mp3"
     import tempfile
@@ -176,11 +204,11 @@ def api_transcribe():
     except Exception as e:
         traceback.print_exc()
         msg = str(e)
-        # Surface readable OpenAI errors
-        if "api_key" in msg.lower() or "authentication" in msg.lower():
-            msg = "Invalid or missing OpenAI API key. Check OPENAI_API_KEY in your Render environment."
-        elif "rate limit" in msg.lower():
-            msg = "OpenAI rate limit hit. Please wait a moment and try again."
+        # Friendly error messages
+        if "429" in msg or "quota" in msg.lower() or "credits" in msg.lower():
+            msg = "API credit/rate limit reached. If using OpenAI without credits, add a free GROQ_API_KEY in Render."
+        elif "api_key" in msg.lower() or "authentication" in msg.lower() or "auth_token" in msg.lower():
+            msg = "Invalid API key. Please check your GROQ_API_KEY in Render Environment settings."
         return jsonify({"error": msg}), 500
 
     finally:
