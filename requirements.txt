@@ -1,18 +1,14 @@
-# Core framework & Production server
+# Core framework & production server
 flask>=3.0.0
 flask-cors>=4.0.0
 gunicorn>=21.2.0
 
-# Speech Recognition
-openai-whisper>=20231117
+# OpenAI Whisper API (cloud — no local model, no PyTorch required)
+openai>=1.30.0
 
-# Audio processing
-librosa>=0.10.0
+# Audio info (lightweight, no PyTorch)
 soundfile>=0.12.1
+librosa>=0.10.0
 
 # WER evaluation
 jiwer>=3.0.0
-
-# Utilities
-numpy>=1.24.0
-

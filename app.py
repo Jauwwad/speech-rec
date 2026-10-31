@@ -1,25 +1,17 @@
 """
 Classroom Lecture Speech-to-Text System
-Flask backend using OpenAI Whisper for transcription and JiWER for WER evaluation.
+Backend using OpenAI Whisper API (cloud) for transcription — no local model loaded.
 """
 
 import os
 import gc
-import json
-import tempfile
 import traceback
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import torch
-import whisper
-import librosa
-import numpy as np
-from jiwer import wer, process_words
-
-# Bound PyTorch CPU threads to avoid memory thrashing on 512MB containers
-torch.set_num_threads(1)
+from openai import OpenAI
+from jiwer import process_words
 
 # ─── App Setup ───────────────────────────────────────────────────────────────
 
@@ -31,11 +23,15 @@ UPLOAD_FOLDER.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a", "ogg", "flac", "webm"}
 
-# Load Whisper model (defaults to 'tiny' for fast execution under 512MB RAM)
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "tiny")
-print(f"Loading Whisper model ({MODEL_NAME})... this may take a moment on first run.")
-MODEL = whisper.load_model(MODEL_NAME)
-print(f"Whisper model ({MODEL_NAME}) loaded ✓")
+MAX_FILE_BYTES = 24 * 1024 * 1024   # 24 MB (OpenAI limit is 25 MB)
+
+# Build OpenAI client — key comes from OPENAI_API_KEY env var set in Render
+_api_key = os.environ.get("OPENAI_API_KEY", "")
+if not _api_key:
+    print("⚠️  OPENAI_API_KEY not set — transcription will fail until the key is configured.")
+client = OpenAI(api_key=_api_key)
+
+print("✓ LectureScript backend ready (OpenAI Whisper API mode).")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -44,66 +40,50 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def get_audio_info(filepath: str) -> dict:
-    """Return basic audio metadata without loading entire audio waveform into RAM."""
+def get_audio_duration(filepath: str) -> float | None:
+    """Cheaply get audio duration without loading full waveform."""
     try:
         import soundfile as sf
-        info = sf.info(filepath)
-        return {
-            "duration_seconds": round(info.duration, 2),
-            "sample_rate": info.samplerate,
-            "channels": info.channels,
-            "format": info.format,
-        }
+        info = sf.info(str(filepath))
+        return round(info.duration, 2)
     except Exception:
-        try:
-            dur = librosa.get_duration(path=filepath)
-            return {"duration_seconds": round(dur, 2)}
-        except Exception:
-            return {}
+        pass
+    try:
+        import librosa
+        return round(librosa.get_duration(path=str(filepath)), 2)
+    except Exception:
+        return None
 
 
 def transcribe_audio(filepath: str) -> dict:
-    """Transcribe audio using Whisper and return transcript + segments.
-
-    Memory-optimized for cloud deployment with strict 512MB RAM limits.
-    """
-    import whisper as _whisper
-
-    # Resample to 16 kHz mono using librosa
-    audio_np, _ = librosa.load(filepath, sr=_whisper.audio.SAMPLE_RATE, mono=True)
-
-    with torch.no_grad():
-        result = MODEL.transcribe(
-            audio_np,
-            fp16=False,
-            word_timestamps=False,
-            verbose=False,
+    """Send audio to OpenAI Whisper API and return full transcript + segments."""
+    with open(filepath, "rb") as f:
+        response = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=f,
+            response_format="verbose_json",   # includes segments with timestamps
+            timestamp_granularities=["segment"],
         )
 
-    # Immediately release numpy buffer & trigger garbage collection
-    del audio_np
-    gc.collect()
+    segments = []
+    if hasattr(response, "segments") and response.segments:
+        for seg in response.segments:
+            segments.append({
+                "id":    seg.id,
+                "start": round(seg.start, 2),
+                "end":   round(seg.end,   2),
+                "text":  seg.text.strip(),
+            })
 
-    segments = [
-        {
-            "id": seg["id"],
-            "start": round(seg["start"], 2),
-            "end": round(seg["end"], 2),
-            "text": seg["text"].strip(),
-        }
-        for seg in result.get("segments", [])
-    ]
     return {
-        "text": result["text"].strip(),
-        "language": result.get("language", "unknown"),
+        "text":     (response.text or "").strip(),
+        "language": getattr(response, "language", "unknown"),
         "segments": segments,
     }
 
 
 def evaluate_wer(hypothesis: str, reference: str) -> dict:
     """Calculate WER and detailed error breakdown using JiWER."""
-    # Normalize whitespace
     hyp = " ".join(hypothesis.lower().split())
     ref = " ".join(reference.lower().split())
 
@@ -115,12 +95,12 @@ def evaluate_wer(hypothesis: str, reference: str) -> dict:
     accuracy = max(0.0, 1.0 - word_error_rate)
 
     return {
-        "wer": round(word_error_rate * 100, 2),           # as percentage
-        "accuracy": round(accuracy * 100, 2),              # as percentage
+        "wer":           round(word_error_rate * 100, 2),
+        "accuracy":      round(accuracy * 100, 2),
         "substitutions": out.substitutions,
-        "deletions": out.deletions,
-        "insertions": out.insertions,
-        "hits": out.hits,
+        "deletions":     out.deletions,
+        "insertions":    out.insertions,
+        "hits":          out.hits,
         "ref_word_count": len(ref.split()),
         "hyp_word_count": len(hyp.split()),
     }
@@ -134,57 +114,88 @@ def index():
     return send_from_directory("static", "index.html")
 
 
+@app.route("/api/health")
+def health():
+    has_key = bool(os.environ.get("OPENAI_API_KEY"))
+    return jsonify({"status": "ok", "api_key_configured": has_key})
+
+
 @app.route("/api/transcribe", methods=["POST"])
 def api_transcribe():
-    """Upload an audio file and return transcription results."""
+    """Upload an audio file and return transcription from OpenAI Whisper API."""
     if "audio" not in request.files:
         return jsonify({"error": "No audio file provided."}), 400
 
     file = request.files["audio"]
-    if file.filename == "":
+    if not file.filename:
         return jsonify({"error": "No file selected."}), 400
-
     if not allowed_file(file.filename):
         return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"error": "Server is not configured with an OpenAI API key. Please set the OPENAI_API_KEY environment variable in your Render dashboard."}), 503
 
-    # Save to uploads folder
-    suffix = Path(file.filename).suffix
-    tmp_path = UPLOAD_FOLDER / (next(tempfile._get_candidate_names()) + suffix)
+    suffix = Path(file.filename).suffix.lower() or ".mp3"
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, suffix=suffix, dir=str(UPLOAD_FOLDER)
+    )
+    tmp_path = Path(tmp.name)
+
     try:
         file.save(str(tmp_path))
 
-        audio_info = get_audio_info(str(tmp_path))
+        # Size guard
+        size_bytes = tmp_path.stat().st_size
+        if size_bytes > MAX_FILE_BYTES:
+            return jsonify({
+                "error": (
+                    f"File is too large ({size_bytes // (1024*1024)} MB). "
+                    "OpenAI Whisper API accepts files up to 24 MB. "
+                    "Please compress or trim your audio."
+                )
+            }), 413
+
+        # Metadata (cheap header read)
+        duration = get_audio_duration(str(tmp_path))
+        audio_info = {
+            "duration_seconds": duration,
+            "file_size_mb": round(size_bytes / (1024 * 1024), 2),
+        }
+
+        # Transcribe via API
         transcription = transcribe_audio(str(tmp_path))
 
         return jsonify({
-            "success": True,
+            "success":    True,
             "transcript": transcription["text"],
-            "language": transcription["language"],
-            "segments": transcription["segments"],
+            "language":   transcription["language"],
+            "segments":   transcription["segments"],
             "audio_info": audio_info,
         })
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        msg = str(e)
+        # Surface readable OpenAI errors
+        if "api_key" in msg.lower() or "authentication" in msg.lower():
+            msg = "Invalid or missing OpenAI API key. Check OPENAI_API_KEY in your Render environment."
+        elif "rate limit" in msg.lower():
+            msg = "OpenAI rate limit hit. Please wait a moment and try again."
+        return jsonify({"error": msg}), 500
 
     finally:
-        # Clean up uploaded file
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        tmp_path.unlink(missing_ok=True)
+        gc.collect()
 
 
 @app.route("/api/evaluate", methods=["POST"])
 def api_evaluate():
-    """Calculate WER between hypothesis and reference transcripts."""
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Expected JSON body."}), 400
 
     hypothesis = data.get("hypothesis", "").strip()
-    reference = data.get("reference", "").strip()
+    reference  = data.get("reference",  "").strip()
 
     if not hypothesis:
         return jsonify({"error": "Hypothesis transcript is empty."}), 400
@@ -201,7 +212,6 @@ def api_evaluate():
 
 @app.route("/api/compare", methods=["POST"])
 def api_compare():
-    """Compare multiple (label, hypothesis, reference) pairs and return a table."""
     data = request.get_json(silent=True)
     if not data or "entries" not in data:
         return jsonify({"error": "Expected JSON with 'entries' list."}), 400
@@ -209,16 +219,13 @@ def api_compare():
     rows = []
     for entry in data["entries"]:
         label = entry.get("label", "—")
-        hyp = entry.get("hypothesis", "").strip()
-        ref = entry.get("reference", "").strip()
+        hyp   = entry.get("hypothesis", "").strip()
+        ref   = entry.get("reference",  "").strip()
         if hyp and ref:
             metrics = evaluate_wer(hyp, ref)
             rows.append({"label": label, **metrics})
         else:
-            rows.append({
-                "label": label,
-                "error": "Missing hypothesis or reference.",
-            })
+            rows.append({"label": label, "error": "Missing hypothesis or reference."})
 
     return jsonify({"success": True, "rows": rows})
 
@@ -227,7 +234,5 @@ def api_compare():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print("\n🎓 Classroom Lecture Speech-to-Text System")
-    print(f"   Open http://localhost:{port} in your browser\n")
+    print(f"\n🎓 LectureScript — open http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False)
-

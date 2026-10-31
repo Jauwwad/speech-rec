@@ -139,9 +139,22 @@ transcribeBtn.addEventListener("click", async () => {
   if (!selectedFile) return;
 
   show(progressWrap);
-  progressMsg.textContent = "Uploading & transcribing… this may take a moment";
+  progressMsg.textContent = "Uploading to OpenAI Whisper API… please wait";
   transcribeBtn.disabled = true;
   setActiveStep(2);
+
+  // Animated progress message cycle so user knows it's working
+  const msgs = [
+    "Uploading audio to OpenAI Whisper API…",
+    "Transcribing your lecture… (this may take 10–30s)",
+    "Processing longer audio… almost there…",
+    "Finalising transcript…",
+  ];
+  let msgIdx = 0;
+  const msgTimer = setInterval(() => {
+    msgIdx = (msgIdx + 1) % msgs.length;
+    progressMsg.textContent = msgs[msgIdx];
+  }, 8000);
 
   const fd = new FormData();
   fd.append("audio", selectedFile);
@@ -152,7 +165,7 @@ transcribeBtn.addEventListener("click", async () => {
     try {
       data = await res.json();
     } catch {
-      throw new Error(`Server response error (${res.status}). The server may have run out of memory or restarted. Please try with a shorter audio clip.`);
+      throw new Error(`Server error (${res.status}). Check your Render logs.`);
     }
     if (!res.ok || data.error) throw new Error(data.error || "Transcription failed.");
 
@@ -193,8 +206,9 @@ transcribeBtn.addEventListener("click", async () => {
     showToast("✅ Transcription complete!");
 
   } catch (err) {
-    showToast(`❌ ${err.message}`, 5000);
+    showToast(`❌ ${err.message}`, 7000);
   } finally {
+    clearInterval(msgTimer);
     hide(progressWrap);
     transcribeBtn.disabled = false;
   }
