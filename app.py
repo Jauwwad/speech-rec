@@ -4,6 +4,7 @@ Flask backend using OpenAI Whisper for transcription and JiWER for WER evaluatio
 """
 
 import os
+import gc
 import json
 import tempfile
 import traceback
@@ -11,10 +12,14 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+import torch
 import whisper
 import librosa
 import numpy as np
 from jiwer import wer, process_words
+
+# Bound PyTorch CPU threads to avoid memory thrashing on 512MB containers
+torch.set_num_threads(1)
 
 # ─── App Setup ───────────────────────────────────────────────────────────────
 
@@ -26,8 +31,8 @@ UPLOAD_FOLDER.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a", "ogg", "flac", "webm"}
 
-# Load the Whisper model once at startup (configurable via WHISPER_MODEL env var)
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+# Load Whisper model (defaults to 'tiny' for fast execution under 512MB RAM)
+MODEL_NAME = os.environ.get("WHISPER_MODEL", "tiny")
 print(f"Loading Whisper model ({MODEL_NAME})... this may take a moment on first run.")
 MODEL = whisper.load_model(MODEL_NAME)
 print(f"Whisper model ({MODEL_NAME}) loaded ✓")
@@ -40,33 +45,46 @@ def allowed_file(filename: str) -> bool:
 
 
 def get_audio_info(filepath: str) -> dict:
-    """Return basic audio metadata via librosa."""
+    """Return basic audio metadata without loading entire audio waveform into RAM."""
     try:
-        y, sr = librosa.load(filepath, sr=None, mono=True)
-        duration = librosa.get_duration(y=y, sr=sr)
-        rms = float(np.sqrt(np.mean(y ** 2)))
+        import soundfile as sf
+        info = sf.info(filepath)
         return {
-            "duration_seconds": round(duration, 2),
-            "sample_rate": sr,
-            "rms_energy": round(rms, 6),
-            "estimated_snr_db": round(20 * np.log10(rms + 1e-9), 2),
+            "duration_seconds": round(info.duration, 2),
+            "sample_rate": info.samplerate,
+            "channels": info.channels,
+            "format": info.format,
         }
     except Exception:
-        return {}
+        try:
+            dur = librosa.get_duration(path=filepath)
+            return {"duration_seconds": round(dur, 2)}
+        except Exception:
+            return {}
 
 
 def transcribe_audio(filepath: str) -> dict:
     """Transcribe audio using Whisper and return transcript + segments.
 
-    Audio is loaded via librosa first (no ffmpeg required) and passed as a
-    float32 numpy array at Whisper's expected 16 kHz sample rate.
+    Memory-optimized for cloud deployment with strict 512MB RAM limits.
     """
     import whisper as _whisper
 
-    # Load & resample to 16 kHz mono using librosa (no ffmpeg dependency)
+    # Resample to 16 kHz mono using librosa
     audio_np, _ = librosa.load(filepath, sr=_whisper.audio.SAMPLE_RATE, mono=True)
 
-    result = MODEL.transcribe(audio_np, word_timestamps=False)
+    with torch.no_grad():
+        result = MODEL.transcribe(
+            audio_np,
+            fp16=False,
+            word_timestamps=False,
+            verbose=False,
+        )
+
+    # Immediately release numpy buffer & trigger garbage collection
+    del audio_np
+    gc.collect()
+
     segments = [
         {
             "id": seg["id"],

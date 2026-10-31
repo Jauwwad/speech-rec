@@ -147,8 +147,13 @@ transcribeBtn.addEventListener("click", async () => {
   fd.append("audio", selectedFile);
 
   try {
-    const res  = await fetch("/api/transcribe", { method: "POST", body: fd });
-    const data = await res.json();
+    const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`Server response error (${res.status}). The server may have run out of memory or restarted. Please try with a shorter audio clip.`);
+    }
     if (!res.ok || data.error) throw new Error(data.error || "Transcription failed.");
 
     // Fill transcript

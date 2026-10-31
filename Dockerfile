@@ -18,7 +18,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the Whisper model during build so startup is instant
-ARG WHISPER_MODEL=base
+ARG WHISPER_MODEL=tiny
 ENV WHISPER_MODEL=${WHISPER_MODEL}
 RUN python -c "import whisper; whisper.load_model('${WHISPER_MODEL}')"
 
